@@ -1,4 +1,4 @@
-#!/usr/bin/sh
+#!/bin/sh
 
 adb-all shell pm clear "com.test.thalitest"
 adb-all logcat -c
