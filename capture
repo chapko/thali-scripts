@@ -1,0 +1,188 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+const cp = require('child_process');
+
+const spawn = cp.spawn;
+const spawnSync = cp.spawnSync;
+const getConnectedDevices = require('./lib/devices').getConnectedDevices;
+
+function createDeferredObject() {
+  let resolve, reject, promise;
+  promise = new Promise((_resolve, _reject) => {
+    resolve = _resolve;
+    reject = _reject;
+  });
+  return { promise, resolve, reject };
+}
+
+
+function logHeader(device) {
+  return (
+`Android device log.
+  ${(new Date()).toISOString()}
+  Device info:
+  ${JSON.stringify(device, null, 4)}
+================================================================================
+
+`);
+}
+
+const SIGINT_LOG = `
+--------------
+  Got SIGINT
+--------------
+`;
+
+function logger(file) {
+  let finished = false;
+  const stream = fs.createWriteStream(file);
+  stream.on('finish', () => finished = true);
+  stream.on('error', (err) => {
+    console.log('Logging error:', err.message);
+    console.log(err.stack);
+    stream.end();
+  });
+
+  return {
+    stream: stream,
+    write(text) {
+      if (finished) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve, reject) => {
+        stream.write(text, 'utf8', function (err) {
+          if (err) {
+            reject(err);
+          }
+          resolve();
+        });
+      });
+    },
+    end(text) {
+      if (finished) {
+        return;
+      }
+      stream.end(text, 'utf8');
+    }
+  };
+}
+
+function createServerJob(devices, serverLogFile, serverLog) {
+  const testServer = path.join(
+    __dirname,
+    '../Thali_CordovaPlugin/test/TestServer/index.js'
+  );
+  const options = JSON.stringify({
+    devices: {
+      android: devices.length
+    }
+  });
+  const child = spawn('jx', [testServer, options]);
+  child.stdout.pipe(serverLog.stream);
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+
+  return {
+    child: child,
+    logFile: serverLogFile,
+    log: serverLog,
+  };
+}
+
+function getDevices() {
+  let devices = getConnectedDevices();
+  if (process.env.DEVICES) {
+    let ids = process.env.DEVICES.split(' ');
+    devices = devices.filter((d) => ids.includes(d.id));
+  }
+  return devices;
+}
+
+function run(options) {
+  const devices = getDevices();
+
+  console.log(`Detected ${devices.length} devices`);
+
+  const logsDir = path.join(__dirname, (new Date()).toISOString());
+  fs.mkdirSync(logsDir);
+
+  const jobs = devices.map((device) => {
+    // clear logcat cache
+    const logFile = path.join(logsDir, `${device.model} (${device.id}).log`);
+    const log = logger(logFile);
+
+    log.write(logHeader(device));
+
+    spawnSync('adb', [
+      '-s', device.id,
+      'logcat -c',
+    ]);
+    const child = spawn('adb', [
+      '-s', device.id,
+      'logcat',
+      '-v', 'threadtime',
+      'jxcore-log:V', '*:V',
+    ]);
+    child.stdout.pipe(log.stream);
+
+    function onExit(code, signal) {
+      if (code !== null) {
+        log.end(`Exited with ${code} code`);
+      } else {
+        log.end(`Terminated with ${signal} signal`);
+      }
+    }
+
+    child.on('error', (err) => {
+      log.write(`Unexpected Error: ${err.message}`);
+      log.end(err.stack);
+    });
+    child.on('close', onExit);
+    child.on('exit', onExit);
+
+    return { child, logFile, log };
+  });
+
+
+  if (!options.noServer) {
+    const serverLogFile = path.join(logsDir, 'server.log');
+    const serverLog = logger(serverLogFile);
+    const serverJob = createServerJob(devices, serverLogFile, serverLog);
+    jobs.push(serverJob);
+
+    serverJob.child.on('close', () => {
+      exit(jobs);
+    });
+  }
+
+  const files = jobs.map(j => j.logFile);
+  console.log(`See logs here:\n  ${files.join('\n  ')}`);
+
+  process.on('SIGINT', () => {
+    const files = jobs.map((j) => j.logFile);
+    Promise.all(jobs.map((j) => j.log.write(SIGINT_LOG)))
+      .then(() => {
+        exit(jobs, 'SIGINT');
+      })
+      .catch((err) => {
+        console.error('ERROR:', err.message);
+        console.error(err.stack);
+        process.exit(1);
+      });
+  });
+}
+
+function exit(jobs, signal) {
+  console.log('\nKilling adb processes...');
+  jobs.forEach((j) => {
+    j.child.kill(signal);
+  });
+  console.log('Done');
+  process.exit(0);
+}
+
+run({
+  noServer: process.argv.includes('--no-server')
+});

@@ -1,0 +1,8 @@
+#!/usr/bin/sh
+
+adb-all shell pm clear "com.test.thalitest"
+adb-all logcat -c
+sleep 1
+adb-all shell am start -n "com.test.thalitest/.MainActivity"
+adb-all shell pm grant com.test.thalitest android.permission.ACCESS_COARSE_LOCATION
+./capture "$@"
