@@ -4,5 +4,5 @@ set -ex
 
 APK="$1"
 
-adb-all uninstall com.test.thalitest
-adb-all install "$APK"
+./adb-all uninstall com.test.thalitest
+./adb-all install "$APK"

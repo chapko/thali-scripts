@@ -1,0 +1,7 @@
+*
+!.gitignore
+!run
+!adb-all
+!capture
+!install
+!lib/devices.js

@@ -1,0 +1,15 @@
+#!/bin/bash
+
+if [ "x$DEVICES" == "x" ]; then
+    devices=($(adb devices | awk '/\<device\>/ { print $1 }'))
+else
+    devices=($DEVICES)
+fi
+
+echo "adb×${#devices[@]} $*"
+
+for device in "${devices[@]}"
+do
+    adb -s "$device" "$@" &
+done
+wait
